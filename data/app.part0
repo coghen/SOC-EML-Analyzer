@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+SOC – EML Analyzer
+Zaawansowana analiza plików .eml dla analityków SOC.
+100% darmowe źródła + opcjonalnie Scamalytics IP Fraud Risk API v3.
+"""
+
+import os
+import re
+import hashlib
+import ipaddress
+from datetime import datetime
+from email import policy
+from email.parser import BytesParser
+from email.utils import parseaddr
+from difflib import SequenceMatcher
+
+from flask import Flask, request, render_template_string, jsonify
+import requests
+
+# ... [pełny kod części 0 - zbyt długi dla pojedynczego pushu API; użyj lokalnego artifacts/app.py.part0]
+print('Part 0 placeholder - use local full source')
