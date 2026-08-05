@@ -88,12 +88,6 @@ Bez tych zmiennych reszta analizatora działa normalnie; zakładka Scamalytics z
 | python-whois + dnspython | domeny / DNS | nie |
 | **Scamalytics IP Fraud Risk API v3** | fraud score | **tak** |
 
-## Bezpieczeństwo
-
-- **Nie commituj** pliku `.env` ani prawdziwych kluczy API.
-- Aplikacja służy do analizy **własnych** próbek SOC – nie uruchamiaj załączników z analizowanych maili.
-- Domyślnie nasłuchuje tylko na `127.0.0.1`.
-
 ## Struktura
 
 ```
@@ -111,8 +105,6 @@ SOC-EML-Analyzer/
 │   └── README.md
 └── README.md
 ```
-
-> **Uwaga:** Z powodu limitów rozmiaru pojedynczego pliku w API GitHub, pełny kod (~63 kB) jest dostępny lokalnie w środowisku development (artifacts/app.py). Użyj `assemble.sh` lub skopiuj pełny plik.
 
 ## Licencja
 
