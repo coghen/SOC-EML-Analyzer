@@ -1,0 +1,146 @@
+iv></div></div></div>
+<div class="tab-pane fade" id="tab-domains"><h5 class="mb-3">Domeny</h5><div class="table-responsive"><table class="table table-sm table-hover ioc-table" id="tblDomains">
+<thead><tr><th>Domena</th><th>Werdykt</th><th>Powód</th><th>Typosquatting</th></tr></thead><tbody></tbody></table></div></div>
+<div class="tab-pane fade" id="tab-ips"><h5 class="mb-3">Adresy IP</h5><div class="table-responsive"><table class="table table-sm table-hover ioc-table" id="tblIps">
+<thead><tr><th>IP</th><th>Werdykt</th><th>Tor/Proxy</th><th>Geo/ISP</th><th>Powód</th></tr></thead><tbody></tbody></table></div></div>
+<div class="tab-pane fade" id="tab-flow"><h5 class="mb-3">Relay IP</h5><div class="table-responsive mb-4"><table class="table table-sm table-hover ioc-table" id="tblRelays">
+<thead><tr><th>Hop</th><th>IP</th><th>Źródło</th><th>Werdykt</th><th>Tor/Proxy</th><th>Szczegóły</th></tr></thead><tbody></tbody></table></div>
+<h5 class="mb-3">Mail Flow</h5><div class="table-responsive"><table class="table table-sm table-bordered" id="tblFlow">
+<thead><tr><th>#</th><th>From</th><th>By</th><th>With</th><th>Data</th><th>IP</th></tr></thead><tbody></tbody></table></div></div>
+<div class="tab-pane fade" id="tab-attach"><h5 class="mb-3">Załączniki</h5><div class="table-responsive"><table class="table table-sm table-hover ioc-table" id="tblAttach">
+<thead><tr><th>Nazwa</th><th>Rozmiar</th><th>Ext</th><th>SHA256</th><th>Werdykt</th><th>Powód</th></tr></thead><tbody></tbody></table></div></div>
+<div class="tab-pane fade" id="tab-urls"><h5 class="mb-3">URL-e</h5><div class="table-responsive"><table class="table table-sm table-hover ioc-table" id="tblUrls">
+<thead><tr><th>URL</th><th>Werdykt</th><th>Powód</th></tr></thead><tbody></tbody></table></div></div>
+<div class="tab-pane fade" id="tab-auth"><h5 class="mb-3">Authentication-Results</h5><div id="authResultsBox" class="mb-4"></div><h5 class="mb-3">DKIM</h5><div id="dkimBox"></div></div>
+<div class="tab-pane fade" id="tab-phishing"><h5 class="mb-3">Wskaźniki phishingowe</h5><div id="phishingIndicators"></div></div>
+<div class="tab-pane fade" id="tab-crypto"><h5 class="mb-3">Bitcoin</h5><div class="table-responsive"><table class="table table-sm ioc-table" id="tblBtc">
+<thead><tr><th>Adres</th><th>Uwagi</th></tr></thead><tbody></tbody></table></div></div>
+<div class="tab-pane fade" id="tab-scamalytics"><h5 class="mb-3">Scamalytics – IP Fraud Risk</h5>
+<p class="text-muted small mb-3">Score 0–100 · risk · VPN/Tor/datacenter · blacklisty. Wymaga SCAMALYTICS_USER i SCAMALYTICS_KEY.</p>
+<div class="table-responsive"><table class="table table-sm table-hover ioc-table" id="tblScamalytics">
+<thead><tr><th>IP</th><th>Score</th><th>Risk</th><th>Werdykt</th><th>Flagi</th><th>Blacklisty</th><th>Geo/ISP</th><th>Szczegóły</th></tr></thead><tbody></tbody></table></div>
+<div class="small text-muted mt-2" id="scamalyticsCredits"></div></div>
+<div class="tab-pane fade" id="tab-ioc"><div class="d-flex justify-content-between mb-3">
+<h5 class="mb-0">Zbiorcze IoC</h5>
+<button class="btn btn-sm btn-outline-secondary no-print" onclick="copyAllIoCs()"><i class="bi bi-clipboard"></i> Kopiuj</button></div>
+<div class="table-responsive"><table class="table table-sm table-hover ioc-table" id="tblAllIoc">
+<thead><tr><th>Typ</th><th>Wartość</th><th>Werdykt</th><th>Powód</th></tr></thead><tbody></tbody></table></div></div>
+</div></div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+document.getElementById('themeSwitcher').addEventListener('change',e=>{document.documentElement.setAttribute('data-bs-theme',e.target.checked?'dark':'light')});
+const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('emlFile');
+dropZone.onclick=()=>fileInput.click();
+dropZone.ondragover=e=>{e.preventDefault();dropZone.classList.add('dragover')};
+dropZone.ondragleave=()=>dropZone.classList.remove('dragover');
+dropZone.ondrop=e=>{e.preventDefault();dropZone.classList.remove('dragover');if(e.dataTransfer.files.length){fileInput.files=e.dataTransfer.files;dropZone.querySelector('p').textContent=e.dataTransfer.files[0].name}};
+fileInput.onchange=()=>{if(fileInput.files.length)dropZone.querySelector('p').textContent=fileInput.files[0].name};
+document.getElementById('uploadForm').onsubmit=async e=>{
+e.preventDefault();if(!fileInput.files.length)return;
+document.getElementById('loadingOverlay').style.display='flex';
+const fd=new FormData();fd.append('eml',fileInput.files[0]);
+try{const resp=await fetch('/analyze',{method:'POST',body:fd});if(!resp.ok)throw new Error(await resp.text());
+const data=await resp.json();document.getElementById('loadingOverlay').style.display='none';showResults(data)}
+catch(err){document.getElementById('loadingOverlay').style.display='none';alert('Błąd: '+err.message)}};
+function escapeHtml(s){return String(s).replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>').replace(/"/g,'"')}
+function verdictBadge(v){const c={'Złośliwy':'verdict-zlosliwy','Podejrzany':'verdict-podejrzany','Czysty':'verdict-czysty'}[v]||'verdict-blad';return `<span class="${c}">${v}</span>`}
+function scoreClass(score){if(score>=75)return'score-high';if(score>=40)return'score-med';return'score-low'}
+function showResults(data){
+document.getElementById('uploadSection').classList.add('d-none');
+document.getElementById('resultsSection').classList.remove('d-none');
+document.getElementById('analysisTime').textContent='Sparsowano: '+data.parsed_at;
+const ph=data.phishing||{},level=ph.level||'NISKI';
+const riskClass={KRYTYCZNY:'risk-critical',WYSOKI:'risk-high',ŚREDNI:'risk-medium'}[level]||'risk-low';
+document.getElementById('phishingBanner').className='card mb-4 text-white '+riskClass;
+document.getElementById('phishingBanner').innerHTML=`<div class="card-body d-flex flex-wrap align-items-center gap-4">
+<div><div class="small opacity-75 text-uppercase">Ryzyko phishingu</div><div class="display-6 fw-bold">${level}</div></div>
+<div><div class="small opacity-75 text-uppercase">Score</div><div class="fs-3 fw-bold">${ph.score||0}/100</div></div>
+<div class="flex-grow-1"><div class="small opacity-75 text-uppercase mb-1">Główne wskaźniki</div>
+<div>${(ph.indicators||[]).slice(0,5).map(i=>i.title).join(' • ')||'Brak istotnych'}</div></div></div>`;
+const i=data.iocs,a=data.attachments;
+document.getElementById('summaryCards').innerHTML=`
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold">${i.domains.length}</div><small>Domeny</small></div></div></div>
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold">${i.ips.length}</div><small>IP</small></div></div></div>
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold">${(data.relay_ips||[]).length}</div><small>Relay IP</small></div></div></div>
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold">${i.urls.length}</div><small>URL</small></div></div></div>
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold">${a.length}</div><small>Załączniki</small></div></div></div>
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold">${(data.dkim_analysis||[]).length}</div><small>DKIM</small></div></div></div>
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold text-warning">${Object.keys(data.typosquatting||{}).length}</div><small>Typosquat</small></div></div></div>
+<div class="col-6 col-md-3 col-xl-2"><div class="card text-center"><div class="card-body py-3"><div class="fs-3 fw-bold">${(data.all_public_ips||[]).length}</div><small>Scamalytics IP</small></div></div></div>`;
+const hBody=document.querySelector('#tblHeaders tbody');hBody.innerHTML='';
+for(const[k,v]of Object.entries(data.headers)){if(k==='Received'||k==='DKIM-Signature-All')continue;
+hBody.innerHTML+=`<tr><td class="text-muted">${k}</td><td style="word-break:break-all">${escapeHtml(String(v))}</td></tr>`}
+document.querySelector('#tblDomains tbody').innerHTML=(i.domains||[]).map(d=>{
+const typo=(data.typosquatting[d]||[]).map(t=>`${t.brand}(${t.similarity}%)`).join(', ')||'—';
+return`<tr data-domain="${escapeHtml(d)}"><td>${escapeHtml(d)}</td><td class="verdict-cell"><span class="spinner-border spinner-border-sm"></span></td><td class="reason-cell text-muted">…</td><td>${escapeHtml(typo)}</td></tr>`}).join('')||'<tr><td colspan="4" class="text-muted">Brak</td></tr>';
+document.querySelector('#tblIps tbody').innerHTML=(i.ips||[]).map(ip=>`<tr data-ip="${ip}"><td>${ip}</td><td class="verdict-cell"><span class="spinner-border spinner-border-sm"></span></td><td class="tor-cell">…</td><td class="geo-cell text-muted">…</td><td class="reason-cell text-muted">…</td></tr>`).join('')||'<tr><td colspan="5" class="text-muted">Brak</td></tr>';
+document.querySelector('#tblRelays tbody').innerHTML=(data.relay_ips||[]).map(r=>`<tr data-ip="${r.ip}"><td>${r.hop||'—'}</td><td><code>${r.ip}</code></td><td>${escapeHtml(r.source)}<br><small class="text-muted">${escapeHtml(r.note||'')}</small></td><td class="verdict-cell"><span class="spinner-border spinner-border-sm"></span></td><td class="tor-cell">…</td><td class="reason-cell text-muted">…</td></tr>`).join('')||'<tr><td colspan="6" class="text-muted">Brak</td></tr>';
+document.querySelector('#tblFlow tbody').innerHTML=(data.mail_flow||[]).map(h=>`<tr><td>${h.order}</td><td>${escapeHtml(h.from||'—')}</td><td>${escapeHtml(h.by||'—')}</td><td>${escapeHtml(h.with||'—')}</td><td>${escapeHtml(h.date||'—')}</td><td>${(h.ips||[]).join(', ')||'—'}</td></tr>`).join('');
+document.querySelector('#tblAttach tbody').innerHTML=(a||[]).map(att=>{const flag=att.suspicious_ext?' <span class="badge bg-danger">podejrzane</span>':'';
+return`<tr data-sha="${att.sha256}" data-suspicious="${att.suspicious_ext}"><td>${escapeHtml(att.filename)}${flag}</td><td>${(att.size/1024).toFixed(1)} KB</td><td>${escapeHtml(att.extension)}</td><td><code class="small">${att.sha256}</code></td><td class="verdict-cell"><span class="spinner-border spinner-border-sm"></span></td><td class="reason-cell text-muted">…</td></tr>`}).join('')||'<tr><td colspan="6" class="text-muted">Brak</td></tr>';
+document.querySelector('#tblUrls tbody').innerHTML=(i.urls||[]).map(u=>`<tr data-url="${escapeHtml(u)}"><td style="word-break:break-all;max-width:480px">${escapeHtml(u)}</td><td class="verdict-cell"><span class="spinner-border spinner-border-sm"></span></td><td class="reason-cell text-muted">…</td></tr>`).join('')||'<tr><td colspan="3" class="text-muted">Brak</td></tr>';
+const ar=data.auth_results||{};
+const badge=v=>!v?'<span class="badge bg-secondary">brak</span>':v==='pass'?'<span class="badge bg-success">pass</span>':(v==='fail'||v==='softfail')?`<span class="badge bg-danger">${v}</span>`:`<span class="badge bg-warning text-dark">${v}</span>`;
+document.getElementById('authResultsBox').innerHTML=`<div class="d-flex flex-wrap gap-3 mb-2">SPF: ${badge(ar.spf)} DKIM: ${badge(ar.dkim)} DMARC: ${badge(ar.dmarc)}</div><div class="small text-muted" style="word-break:break-all">${escapeHtml(ar.raw||'Brak Authentication-Results')}</div>`;
+const dkimBox=document.getElementById('dkimBox');
+if(!(data.dkim_analysis||[]).length){dkimBox.innerHTML='<div class="alert alert-warning mb-0">Brak DKIM-Signature</div>'}
+else{dkimBox.innerHTML=data.dkim_analysis.map((d,idx)=>{const ab=d.alignment==='strict'?'success':d.alignment.startsWith('relaxed')?'info':d.alignment==='fail'?'danger':'secondary';
+return`<div class="card mb-3"><div class="card-header d-flex justify-content-between"><span>#${idx+1} d=<code>${escapeHtml(d.domain)}</code> s=<code>${escapeHtml(d.selector)}</code></span><span class="badge bg-${ab}">${escapeHtml(d.alignment)}</span></div><div class="card-body small">Alg: ${escapeHtml(d.algorithm||'—')} | From: ${escapeHtml(d.from_domain||'—')}<div class="mt-2" id="dkim-key-${idx}"><span class="spinner-border spinner-border-sm"></span> Klucz DNS…</div></div></div>`}).join('');
+data.dkim_analysis.forEach((d,idx)=>{if(!d.domain||!d.selector)return;fetch('/api/check_dkim_key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain:d.domain,selector:d.selector})}).then(r=>r.json()).then(j=>{const el=document.getElementById('dkim-key-'+idx);if(!el)return;el.innerHTML=j.key_present?`<span class="text-success"><i class="bi bi-check-circle"></i> Klucz OK</span> <code class="small">${escapeHtml(j.key_preview||'')}</code>`:`<span class="text-danger"><i class="bi bi-x-circle"></i> ${escapeHtml(j.reason||'Brak')}</span>`})})}
+const indBox=document.getElementById('phishingIndicators');
+indBox.innerHTML=(ph.indicators||[]).length?ph.indicators.map(ind=>`<div class="card mb-2 indicator-${ind.severity}"><div class="card-body py-2"><div class="d-flex justify-content-between"><strong>${escapeHtml(ind.title)}</strong><span class="badge bg-secondary">${ind.severity}</span></div>${ind.detail?`<div class="small text-muted mt-1">${escapeHtml(ind.detail)}</div>`:''}</div></div>`).join(''):'<div class="text-muted">Brak wskaźników</div>';
+document.querySelector('#tblBtc tbody').innerHTML=(i.btc||[]).length?(i.btc||[]).map(b=>`<tr><td><code>${b}</code></td><td>blockchair.com</td></tr>`).join(''):'<tr><td colspan="2" class="text-muted">Brak</td></tr>';
+const scamIps=data.all_public_ips||[];
+document.querySelector('#tblScamalytics tbody').innerHTML=scamIps.length?scamIps.map(ip=>`<tr data-ip="${ip}"><td><code>${ip}</code></td><td class="score-cell">…</td><td class="risk-cell">…</td><td class="verdict-cell"><span class="spinner-border spinner-border-sm"></span></td><td class="flags-cell">…</td><td class="bl-cell">…</td><td class="geo-cell text-muted">…</td><td class="detail-cell small">…</td></tr>`).join(''):'<tr><td colspan="8" class="text-muted">Brak publicznych IP</td></tr>';
+if(!data.scamalytics_configured){document.getElementById('scamalyticsCredits').innerHTML='<span class="text-warning">Scamalytics nie skonfigurowany – ustaw SCAMALYTICS_USER i SCAMALYTICS_KEY w pliku .env</span>'}
+runEnrichment(data)}
+async function runEnrichment(data){
+const allIoc=[];
+for(const row of document.querySelectorAll('#tblDomains tbody tr[data-domain]')){try{const r=await fetch('/api/check_domain/'+encodeURIComponent(row.dataset.domain));const j=await r.json();row.querySelector('.verdict-cell').innerHTML=verdictBadge(j.verdict);row.querySelector('.reason-cell').textContent=j.reason||'';allIoc.push({type:'domain',value:row.dataset.domain,verdict:j.verdict,reason:j.reason})}catch(e){row.querySelector('.verdict-cell').innerHTML=verdictBadge('Błąd')}}
+const ipRows=[...document.querySelectorAll('#tblIps tbody tr[data-ip], #tblRelays tbody tr[data-ip]')];
+const uniqueIps=[...new Set(ipRows.map(r=>r.dataset.ip).filter(Boolean))];const ipCache={};
+for(const ip of uniqueIps){try{const r=await fetch('/api/check_ip/'+ip);ipCache[ip]=await r.json()}catch(e){ipCache[ip]={verdict:'Błąd',reason:e.message}}}
+for(const row of ipRows){const j=ipCache[row.dataset.ip]||{};row.querySelector('.verdict-cell').innerHTML=verdictBadge(j.verdict||'Błąd');const torCell=row.querySelector('.tor-cell');if(torCell){let badges='';if(j.is_tor)badges+='<span class="badge badge-tor me-1">TOR</span>';if(j.is_proxy)badges+='<span class="badge badge-proxy me-1">PROXY/VPN</span>';if(j.is_hosting)badges+='<span class="badge bg-secondary me-1">HOSTING</span>';if(j.dnsbl_hits&&j.dnsbl_hits.length)badges+=`<span class="badge bg-danger">${j.dnsbl_hits.length} DNSBL</span>`;torCell.innerHTML=badges||'—'}const geoCell=row.querySelector('.geo-cell');if(geoCell&&j.geo)geoCell.textContent=[j.geo.city,j.geo.country,j.geo.isp].filter(Boolean).join(' | ')||'—';const reasonCell=row.querySelector('.reason-cell');if(reasonCell)reasonCell.textContent=j.reason||'';if(row.closest('#tblIps'))allIoc.push({type:'ip',value:row.dataset.ip,verdict:j.verdict,reason:j.reason})}
+for(const row of document.querySelectorAll('#tblAttach tbody tr[data-sha]')){try{const r=await fetch('/api/check_hash/'+row.dataset.sha);const j=await r.json();let finalVerdict=j.verdict,finalReason=j.reason||'';if(row.dataset.suspicious==='true'&&(finalVerdict==='Czysty'||finalVerdict==='Błąd')){finalVerdict='Podejrzany';finalReason='Podejrzane rozszerzenie'+(finalReason?' • '+finalReason:'')}row.querySelector('.verdict-cell').innerHTML=verdictBadge(finalVerdict);row.querySelector('.reason-cell').textContent=finalReason;allIoc.push({type:'sha256',value:row.dataset.sha,verdict:finalVerdict,reason:finalReason})}catch(e){row.querySelector('.verdict-cell').innerHTML=verdictBadge('Błąd')}}
+for(const row of document.querySelectorAll('#tblUrls tbody tr[data-url]')){try{const r=await fetch('/api/check_url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:row.dataset.url})});const j=await r.json();row.querySelector('.verdict-cell').innerHTML=verdictBadge(j.verdict);row.querySelector('.reason-cell').textContent=j.reason||'';allIoc.push({type:'url',value:row.dataset.url,verdict:j.verdict,reason:j.reason})}catch(e){row.querySelector('.verdict-cell').innerHTML=verdictBadge('Błąd')}}
+let lastCredits=null;
+for(const row of document.querySelectorAll('#tblScamalytics tbody tr[data-ip]')){try{const r=await fetch('/api/check_scamalytics/'+row.dataset.ip);const j=await r.json();if(j.status==='error'){row.querySelector('.verdict-cell').innerHTML=verdictBadge('Błąd');row.querySelector('.detail-cell').textContent=j.error||'error';continue}const sc=j.score??'—';row.querySelector('.score-cell').innerHTML=`<span class="${scoreClass(Number(sc))}">${sc}</span>`;row.querySelector('.risk-cell').textContent=j.risk||'—';row.querySelector('.verdict-cell').innerHTML=verdictBadge(j.verdict||'Czysty');row.querySelector('.flags-cell').innerHTML=(j.flags||[]).map(f=>`<span class="badge bg-secondary me-1">${escapeHtml(f)}</span>`).join('')||'—';row.querySelector('.bl-cell').innerHTML=(j.blacklists||[]).map(b=>`<span class="badge bg-danger me-1">${escapeHtml(b)}</span>`).join('')||'—';const g=j.geo||{};row.querySelector('.geo-cell').textContent=[g.city,g.country,g.isp].filter(Boolean).join(' | ')||'—';let detail=[];if(j.isp_score!=null)detail.push('ISP score: '+j.isp_score);if(j.isp_risk)detail.push('ISP risk: '+j.isp_risk);if(j.url)detail.push(`<a href="${escapeHtml(j.url)}" target="_blank" rel="noopener">scamalytics.com</a>`);row.querySelector('.detail-cell').innerHTML=detail.join(' · ')||'—';if(j.credits)lastCredits=j.credits;allIoc.push({type:'scamalytics',value:row.dataset.ip,verdict:j.verdict,reason:`score=${sc} risk=${j.risk||'?'} flags=${(j.flags||[]).join(',')}`})}catch(e){row.querySelector('.verdict-cell').innerHTML=verdictBadge('Błąd');row.querySelector('.detail-cell').textContent=e.message}}
+if(lastCredits){document.getElementById('scamalyticsCredits').textContent=`Kredyty Scamalytics: użyte ${lastCredits.used??'?'} · pozostało ${lastCredits.remaining??'?'}`}
+const iocBody=document.querySelector('#tblAllIoc tbody');
+iocBody.innerHTML=allIoc.map(r=>`<tr><td><span class="badge bg-secondary">${r.type}</span></td><td style="word-break:break-all">${escapeHtml(r.value)}</td><td>${verdictBadge(r.verdict)}</td><td class="small">${escapeHtml(r.reason||'')}</td></tr>`).join('');
+(data.iocs.btc||[]).forEach(b=>{iocBody.innerHTML+=`<tr><td><span class="badge bg-warning text-dark">btc</span></td><td><code>${b}</code></td><td>—</td><td>Explorer</td></tr>`})}
+function copyAllIoCs(){const text=[...document.querySelectorAll('#tblAllIoc tbody tr')].map(r=>{const c=r.querySelectorAll('td');return c[0].innerText+'\t'+c[1].innerText+'\t'+c[2].innerText}).join('\n');navigator.clipboard.writeText(text).then(()=>alert('Skopiowano'))}
+function downloadHTMLReport(){const blob=new Blob([document.documentElement.outerHTML],{type:'text/html'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='eml-report-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.html';a.click()}
+</script>
+</body>
+</html>
+"""
+
+
+@app.route('/')
+def index():
+    return render_template_string(INDEX_HTML)
+
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    if 'eml' not in request.files:
+        return jsonify({'error': 'Brak pliku'}), 400
+    f = request.files['eml']
+    if not f.filename:
+        return jsonify({'error': 'Pusty plik'}), 400
+    try:
+        return jsonify(parse_eml(f.read()))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+if __name__ == '__main__':
+    print('=' * 60)
+    print('  SOC – EML Analyzer  http://127.0.0.1:5000')
+    if SCAMALYTICS_USER and SCAMALYTICS_KEY:
+        print('  Scamalytics: skonfigurowany')
+    else:
+        print('  Scamalytics: brak kluczy (ustaw SCAMALYTICS_USER / KEY)')
+    print('=' * 60)
+    app.run(host='127.0.0.1', port=5000, debug=False)
