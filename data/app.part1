@@ -1,0 +1,486 @@
+LYTICS_USER or not SCAMALYTICS_KEY:
+        return {
+            'ip': ip, 'status': 'error',
+            'error': 'Brak SCAMALYTICS_USER / SCAMALYTICS_KEY w środowisku',
+            'verdict': 'Błąd'
+        }
+    try:
+        url = f'{SCAMALYTICS_BASE}/{SCAMALYTICS_USER}'
+        r = requests.get(url, params={'key': SCAMALYTICS_KEY, 'ip': ip}, timeout=10)
+        data = r.json()
+        sa = data.get('scamalytics') or data
+        if sa.get('status') == 'error':
+            return {'ip': ip, 'error': sa.get('error', 'unknown'), 'status': 'error', 'verdict': 'Błąd'}
+        proxy = sa.get('scamalytics_proxy') or {}
+        ext = sa.get('external_datasources') or {}
+        x4b = ext.get('x4bnet') or {}
+        firehol = ext.get('firehol') or {}
+        ipsum = ext.get('ipsum') or {}
+        spamhaus = ext.get('spamhaus_drop') or {}
+        ip2p = ext.get('ip2proxy_lite') or {}
+        mm = ext.get('maxmind_geolite2') or {}
+
+        score = sa.get('scamalytics_score', 0) or 0
+        risk = (sa.get('scamalytics_risk') or 'low').lower()
+        if risk in ('very high', 'high') or score >= 75:
+            verdict = 'Złośliwy'
+        elif risk == 'medium' or score >= 40:
+            verdict = 'Podejrzany'
+        else:
+            verdict = 'Czysty'
+
+        flags = []
+        if proxy.get('is_vpn'):
+            flags.append('VPN')
+        if proxy.get('is_datacenter'):
+            flags.append('Datacenter')
+        if x4b.get('is_tor'):
+            flags.append('TOR')
+        if proxy.get('is_amazon_aws'):
+            flags.append('AWS')
+        if proxy.get('is_google'):
+            flags.append('Google')
+        if proxy.get('is_apple_icloud_private_relay'):
+            flags.append('iCloud Relay')
+        if proxy.get('is_blacklisted_external') or sa.get('is_blacklisted_external'):
+            flags.append('External BL')
+
+        bl = []
+        if firehol.get('ip_blacklisted_30') or firehol.get('ip_blacklisted_1day'):
+            bl.append('FireHOL')
+        if ipsum.get('ip_blacklisted'):
+            bl.append(f"IPsum({ipsum.get('num_blacklists', '?')})")
+        if spamhaus.get('ip_blacklisted'):
+            bl.append('Spamhaus DROP')
+
+        return {
+            'ip': ip,
+            'status': sa.get('status', 'ok'),
+            'mode': sa.get('mode'),
+            'score': score,
+            'risk': risk,
+            'verdict': verdict,
+            'isp_score': sa.get('scamalytics_isp_score'),
+            'isp_risk': sa.get('scamalytics_isp_risk'),
+            'url': sa.get('scamalytics_url'),
+            'flags': flags,
+            'blacklists': bl,
+            'proxy': proxy,
+            'geo': {
+                'country': mm.get('ip_country_name') or ip2p.get('ip_country_name'),
+                'city': mm.get('ip_city') or ip2p.get('ip_city'),
+                'isp': ip2p.get('isp_name') or sa.get('scamalytics_isp'),
+            },
+            'credits': sa.get('credits') or {},
+        }
+    except Exception as e:
+        return {'ip': ip, 'status': 'error', 'error': str(e), 'verdict': 'Błąd'}
+
+
+def query_shodan(ip):
+    try:
+        r = requests.get(f'https://internetdb.shodan.io/{ip}', timeout=7)
+        if r.status_code == 404:
+            return {'tags': [], 'ports': [], 'vulns': [], 'hostnames': []}
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+
+def query_ipapi(ip):
+    try:
+        r = requests.get(
+            f'http://ip-api.com/json/{ip}'
+            f'?fields=status,message,country,countryCode,city,isp,org,as,asname,proxy,hosting,mobile,query',
+            timeout=6
+        )
+        data = r.json()
+        return data if data.get('status') == 'success' else {}
+    except Exception:
+        return {}
+
+
+def query_tor_onionoo(ip):
+    try:
+        r = requests.get(f'https://onionoo.torproject.org/details?search={ip}', timeout=8)
+        data = r.json()
+        relays = data.get('relays') or []
+        bridges = data.get('bridges') or []
+        return {
+            'is_tor': bool(relays or bridges),
+            'details': [
+                f"{rel.get('nickname', '?')} ({', '.join(rel.get('flags') or [])})"
+                for rel in relays[:3]
+            ]
+        }
+    except Exception:
+        return {'is_tor': False, 'details': []}
+
+
+def query_dnsbl(ip):
+    positives = []
+    rev = reverse_ip(ip)
+    for zone, name in DNSBLS:
+        try:
+            answers = dns.resolver.resolve(f'{rev}.{zone}', 'A')
+            if answers:
+                positives.append(name)
+        except Exception:
+            pass
+    return positives
+
+
+def query_threatfox(term):
+    try:
+        r = requests.post(
+            'https://threatfox-api.abuse.ch/api/v1/',
+            json={'query': 'search_ioc', 'search_term': term}, timeout=8
+        )
+        data = r.json()
+        if data.get('query_status') == 'ok' and data.get('data'):
+            return data['data'][:5]
+        return []
+    except Exception:
+        return []
+
+
+def query_circl_hash(sha256):
+    try:
+        r = requests.get(
+            f'https://hashlookup.circl.lu/lookup/sha256/{sha256}',
+            timeout=8, headers={'Accept': 'application/json'}
+        )
+        return r.json() if r.status_code == 200 else {}
+    except Exception:
+        return {}
+
+
+@app.route('/api/check_scamalytics/<ip>')
+def api_check_scamalytics(ip):
+    return jsonify(query_scamalytics(ip))
+
+
+@app.route('/api/check_ip/<ip>')
+def api_check_ip(ip):
+    if not is_public_ip(ip):
+        return jsonify({
+            'ip': ip, 'verdict': 'Prywatny',
+            'reason': 'Adres prywatny/zarezerwowany', 'data': {}
+        })
+    shodan = query_shodan(ip)
+    ipapi = query_ipapi(ip)
+    tor = query_tor_onionoo(ip)
+    dnsbls = query_dnsbl(ip)
+    fox = query_threatfox(ip)
+    tags = shodan.get('tags') or []
+    vulns = shodan.get('vulns') or []
+    reasons, verdict = [], 'Czysty'
+    if tor.get('is_tor') or 'tor' in tags:
+        verdict = 'Złośliwy'
+        reasons.append('TOR exit node / relay')
+    if ipapi.get('proxy'):
+        if verdict == 'Czysty':
+            verdict = 'Podejrzany'
+        reasons.append('PROXY/VPN (ip-api)')
+    if ipapi.get('hosting'):
+        reasons.append('Hosting/datacenter')
+    bad_tags = [t for t in tags if t in ('malware', 'c2', 'botnet', 'scanner', 'tor', 'vpn', 'proxy')]
+    if bad_tags:
+        verdict = 'Złośliwy' if any(t in bad_tags for t in ('malware', 'c2', 'botnet')) else 'Podejrzany'
+        reasons.append(f'Shodan: {", ".join(bad_tags)}')
+    if vulns:
+        if verdict == 'Czysty':
+            verdict = 'Podejrzany'
+        reasons.append(f'Podatności: {len(vulns)}')
+    if dnsbls:
+        verdict = 'Złośliwy' if len(dnsbls) >= 2 else 'Podejrzany'
+        reasons.append(f'DNSBL: {", ".join(dnsbls)}')
+    if fox:
+        verdict = 'Złośliwy'
+        reasons.append(f'ThreatFox: {fox[0].get("malware") or fox[0].get("threat_type") or "ioc"}')
+    geo = []
+    if ipapi.get('country'):
+        geo.append(f"{ipapi.get('city', '')}, {ipapi.get('country')}".strip(', '))
+    if ipapi.get('isp'):
+        geo.append(ipapi['isp'])
+    if ipapi.get('as'):
+        geo.append(ipapi['as'])
+    if geo:
+        reasons.append(' | '.join(geo))
+    if not reasons:
+        reasons.append('Brak alarmów')
+    return jsonify({
+        'ip': ip, 'verdict': verdict, 'reason': ' • '.join(reasons),
+        'is_tor': tor.get('is_tor') or 'tor' in tags,
+        'is_proxy': bool(ipapi.get('proxy')),
+        'is_hosting': bool(ipapi.get('hosting')),
+        'dnsbl_hits': dnsbls,
+        'geo': {
+            'country': ipapi.get('country'), 'city': ipapi.get('city'),
+            'isp': ipapi.get('isp'), 'org': ipapi.get('org'), 'as': ipapi.get('as')
+        },
+        'shodan_tags': tags, 'ports': shodan.get('ports') or [],
+        'data': {'shodan': shodan, 'ipapi': ipapi, 'tor': tor, 'threatfox': fox}
+    })
+
+
+@app.route('/api/check_hash/<hash_value>')
+def api_check_hash(hash_value):
+    reasons, verdict, details = [], 'Czysty', {}
+    try:
+        r = requests.post(
+            'https://mb-api.abuse.ch/api/v1/',
+            data={'query': 'get_info', 'hash': hash_value}, timeout=10
+        )
+        data = r.json()
+        if data.get('query_status') == 'ok' and data.get('data'):
+            sample = data['data'][0]
+            sig = sample.get('signature') or sample.get('malware') or 'unknown'
+            verdict = 'Złośliwy'
+            reasons.append(f'MalwareBazaar: {sig}')
+            details['malwarebazaar'] = sample
+    except Exception as e:
+        reasons.append(f'MB error: {e}')
+    circl = query_circl_hash(hash_value)
+    if circl:
+        details['circl'] = {'known': True}
+        reasons.append('CIRCL Hashlookup' if verdict == 'Czysty' else 'Potwierdzony w CIRCL')
+    fox = query_threatfox(hash_value)
+    if fox:
+        verdict = 'Złośliwy'
+        reasons.append(f'ThreatFox: {fox[0].get("malware") or "ioc"}')
+        details['threatfox'] = fox
+    if not reasons:
+        reasons.append('Brak wpisu w MalwareBazaar / CIRCL / ThreatFox')
+    return jsonify({
+        'hash': hash_value, 'verdict': verdict,
+        'reason': ' • '.join(reasons), 'data': details
+    })
+
+
+@app.route('/api/check_url', methods=['POST'])
+def api_check_url():
+    url = (request.json or {}).get('url', '').strip()
+    if not url:
+        return jsonify({'error': 'brak url'}), 400
+    try:
+        r = requests.post('https://urlhaus-api.abuse.ch/v1/url/', data={'url': url}, timeout=10)
+        data = r.json()
+        if data.get('query_status') == 'ok':
+            return jsonify({
+                'url': url, 'verdict': 'Złośliwy',
+                'reason': f'URLhaus ({data.get("threat")}, {data.get("url_status")})',
+                'data': data
+            })
+        fox = query_threatfox(url)
+        if fox:
+            return jsonify({
+                'url': url, 'verdict': 'Złośliwy',
+                'reason': f'ThreatFox: {fox[0].get("malware") or "ioc"}',
+                'data': {'threatfox': fox}
+            })
+        return jsonify({
+            'url': url, 'verdict': 'Czysty',
+            'reason': 'Brak wpisu w URLhaus/ThreatFox', 'data': {}
+        })
+    except Exception as e:
+        return jsonify({'url': url, 'verdict': 'Błąd', 'reason': str(e), 'data': {}})
+
+
+@app.route('/api/check_domain/<path:domain>')
+def api_check_domain(domain):
+    domain = domain.lower().lstrip('www.')
+    result = {
+        'domain': domain, 'verdict': 'Czysty', 'reasons': [],
+        'whois': {}, 'dns': {}, 'urlhaus': {}, 'threatfox': []
+    }
+    try:
+        r = requests.post(
+            'https://urlhaus-api.abuse.ch/v1/host/', data={'host': domain}, timeout=8
+        )
+        uh = r.json()
+        if uh.get('query_status') == 'ok':
+            result['verdict'] = 'Złośliwy'
+            result['reasons'].append(f'URLhaus ({uh.get("url_count", "?")} URL)')
+            result['urlhaus'] = uh
+    except Exception:
+        pass
+    fox = query_threatfox(domain)
+    if fox:
+        result['verdict'] = 'Złośliwy'
+        result['reasons'].append(f'ThreatFox: {fox[0].get("malware") or "ioc"}')
+        result['threatfox'] = fox
+    try:
+        w = whois.whois(domain)
+        created = w.creation_date
+        if isinstance(created, list):
+            created = created[0]
+        result['whois'] = {
+            'registrar': str(w.registrar) if w.registrar else None,
+            'creation_date': str(created) if created else None,
+            'org': str(w.org) if w.org else None
+        }
+        if created:
+            age_days = (datetime.utcnow() - created.replace(tzinfo=None)).days
+            if age_days < 30:
+                if result['verdict'] == 'Czysty':
+                    result['verdict'] = 'Podejrzany'
+                result['reasons'].append(f'Świeża domena ({age_days} dni)')
+    except Exception as e:
+        result['whois']['error'] = str(e)
+    try:
+        try:
+            answers = dns.resolver.resolve(domain, 'TXT')
+            spf = [str(r) for r in answers if 'v=spf1' in str(r).lower()]
+            result['dns']['spf'] = spf[0] if spf else 'BRAK'
+            if not spf:
+                result['reasons'].append('Brak SPF')
+        except Exception:
+            result['dns']['spf'] = 'BRAK'
+            result['reasons'].append('Brak SPF')
+        try:
+            answers = dns.resolver.resolve(f'_dmarc.{domain}', 'TXT')
+            dmarc = [str(r) for r in answers if 'v=dmarc1' in str(r).lower()]
+            result['dns']['dmarc'] = dmarc[0] if dmarc else 'BRAK'
+            if not dmarc:
+                result['reasons'].append('Brak DMARC')
+        except Exception:
+            result['dns']['dmarc'] = 'BRAK'
+            result['reasons'].append('Brak DMARC')
+        try:
+            answers = dns.resolver.resolve(domain, 'MX')
+            result['dns']['mx'] = [str(r.exchange).rstrip('.') for r in answers]
+        except Exception:
+            result['dns']['mx'] = []
+            result['reasons'].append('Brak MX')
+    except Exception as e:
+        result['dns']['error'] = str(e)
+    if any(domain.endswith(fh) or fh in domain for fh in FREE_HOSTING):
+        if result['verdict'] == 'Czysty':
+            result['verdict'] = 'Podejrzany'
+        result['reasons'].append('Free hosting')
+    if any(domain.endswith(t) for t in SUSPICIOUS_TLDS):
+        if result['verdict'] == 'Czysty':
+            result['verdict'] = 'Podejrzany'
+        result['reasons'].append('Podejrzane TLD')
+    if not result['reasons']:
+        result['reasons'].append('Brak alarmów')
+    result['reason'] = '; '.join(result['reasons'])
+    return jsonify(result)
+
+
+@app.route('/api/check_dkim_key', methods=['POST'])
+def api_check_dkim_key():
+    data = request.json or {}
+    domain = (data.get('domain') or '').lower().strip()
+    selector = (data.get('selector') or '').strip()
+    if not domain or not selector:
+        return jsonify({'error': 'brak domain/selector'}), 400
+    name = f'{selector}._domainkey.{domain}'
+    try:
+        answers = dns.resolver.resolve(name, 'TXT')
+        full = ''.join(str(r).strip('"') for r in answers)
+        m = re.search(r'p=([A-Za-z0-9+/=]+)', full)
+        key_present = bool(m and m.group(1))
+        return jsonify({
+            'domain': domain, 'selector': selector, 'dns_name': name,
+            'key_present': key_present,
+            'key_preview': (m.group(1)[:40] + '…') if key_present else None,
+            'key_type': (re.search(r'k=(\w+)', full) or [None, 'rsa'])[1],
+            'verdict': 'OK' if key_present else 'Brak klucza',
+            'reason': 'Klucz obecny w DNS' if key_present else 'Brak rekordu lub pusty p='
+        })
+    except dns.resolver.NXDOMAIN:
+        return jsonify({
+            'domain': domain, 'selector': selector, 'key_present': False,
+            'verdict': 'Brak klucza', 'reason': 'NXDOMAIN'
+        })
+    except Exception as e:
+        return jsonify({
+            'domain': domain, 'selector': selector, 'key_present': False,
+            'verdict': 'Błąd', 'reason': str(e)
+        })
+
+
+# ============================================================
+# UI
+# ============================================================
+
+INDEX_HTML = r"""<!DOCTYPE html>
+<html lang="pl" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOC – EML Analyzer</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+body{min-height:100vh}
+.drop-zone{border:2px dashed var(--bs-border-color);border-radius:1rem;padding:3rem;text-align:center;cursor:pointer;transition:.2s}
+.drop-zone:hover,.drop-zone.dragover{border-color:var(--bs-primary);background:rgba(13,110,253,.08)}
+.verdict-zlosliwy{color:#ff6b6b;font-weight:700}
+.verdict-podejrzany{color:#ffd43b;font-weight:700}
+.verdict-czysty{color:#51cf66;font-weight:700}
+.verdict-blad{color:#adb5bd}
+.ioc-table td{font-family:ui-monospace,monospace;font-size:.85rem}
+.risk-critical{background:linear-gradient(90deg,#5c1010,#7a1f1f)}
+.risk-high{background:linear-gradient(90deg,#5c3a10,#7a4f1f)}
+.risk-medium{background:linear-gradient(90deg,#4a4a10,#6a6a1f)}
+.risk-low{background:linear-gradient(90deg,#104a1a,#1f6a2a)}
+.indicator-critical{border-left:4px solid #ff6b6b}
+.indicator-high{border-left:4px solid #ff922b}
+.indicator-medium{border-left:4px solid #ffd43b}
+.indicator-low{border-left:4px solid #74c0fc}
+.badge-tor{background:#9c36b5}.badge-proxy{background:#e8590c}
+.score-high{color:#ff6b6b;font-weight:700}.score-med{color:#ffd43b;font-weight:700}.score-low{color:#51cf66;font-weight:700}
+.nav-tabs .nav-link{white-space:nowrap}
+#loadingOverlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:none;align-items:center;justify-content:center;z-index:9999}
+@media print{
+body{background:#fff!important;color:#000!important}
+.no-print,.btn,.form-check,#themeSwitcher,.nav-tabs{display:none!important}
+.tab-content>.tab-pane{display:block!important;opacity:1!important;page-break-before:always}
+.tab-content>.tab-pane:first-child{page-break-before:avoid}
+}
+</style>
+</head>
+<body>
+<div id="loadingOverlay"><div class="text-center text-white"><div class="spinner-border mb-3" style="width:3rem;height:3rem"></div><div>Parsowanie i analiza…</div></div></div>
+<nav class="navbar navbar-expand-lg border-bottom mb-4"><div class="container-fluid">
+<span class="navbar-brand fw-bold"><i class="bi bi-shield-lock"></i> EML Analyzer <small class="text-muted">SOC</small></span>
+<div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="themeSwitcher" checked><label class="form-check-label" for="themeSwitcher">Dark</label></div>
+</div></nav>
+<div class="container pb-5" id="uploadSection"><div class="row justify-content-center"><div class="col-lg-8">
+<div class="card shadow"><div class="card-body p-4"><h4 class="mb-3">Wgraj plik .eml</h4>
+<form id="uploadForm"><div class="drop-zone mb-3" id="dropZone"><i class="bi bi-cloud-upload display-4 text-muted"></i>
+<p class="mt-2 mb-1">Przeciągnij .eml lub kliknij</p><small class="text-muted">Max 32 MB</small>
+<input type="file" id="emlFile" accept=".eml,message/rfc822" class="d-none" required></div>
+<button type="submit" class="btn btn-primary w-100"><i class="bi bi-search"></i> Analizuj</button></form>
+</div></div>
+<div class="mt-3 text-muted small">Shodan · ip-api · Tor · DNSBL · Abuse.ch · CIRCL · WHOIS · <strong>Scamalytics</strong></div>
+</div></div></div>
+<div class="container-fluid d-none" id="resultsSection">
+<div class="d-flex flex-wrap gap-2 mb-3 no-print">
+<button class="btn btn-outline-secondary btn-sm" onclick="location.reload()"><i class="bi bi-arrow-left"></i> Nowa</button>
+<button class="btn btn-outline-primary btn-sm" onclick="downloadHTMLReport()"><i class="bi bi-download"></i> HTML</button>
+<button class="btn btn-outline-danger btn-sm" onclick="window.print()"><i class="bi bi-printer"></i> PDF</button>
+<span class="ms-auto text-muted small" id="analysisTime"></span></div>
+<div id="phishingBanner" class="card mb-4 text-white"></div>
+<ul class="nav nav-tabs flex-nowrap overflow-auto" role="tablist">
+<li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-summary">1. Podsumowanie</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-domains">2. Domeny</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ips">3. Adresy IP</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-flow">4. Ścieżka mailowa</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-attach">5. Załączniki</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-urls">6. URL-e</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-auth">7. Autentykacja i DKIM</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-phishing">8. Wskaźniki phishingu</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-crypto">9. Kryptowaluty</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-scamalytics">10. Scamalytics</button></li>
+<li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ioc">11. IoC (SIEM)</button></li>
+</ul>
+<div class="tab-content border border-top-0 p-3 rounded-bottom">
+<div class="tab-pane fade show active" id="tab-summary"><h5 class="mb-3">Podsumowanie</h5><div class="row g-3 mb-4" id="summaryCards"></div>
+<div class="card"><div class="card-header">Kluczowe nagłówki</div><div class="card-body p-0"><div class="table-responsive">
+<table class="table table-sm mb-0" id="tblHeaders"><thead><tr><th style="width:200px">Nagłówek</th><th>Wartość</th></tr></thead><tbody></tbody></table>
+</d
