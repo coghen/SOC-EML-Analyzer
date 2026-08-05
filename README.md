@@ -6,6 +6,8 @@ Zaawansowana, jednoplikowa aplikacja webowa (Flask) dla analityków **SOC** do a
 ![Flask](https://img.shields.io/badge/Flask-3.x-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
+**Repozytorium:** https://github.com/coghen/SOC-EML-Analyzer
+
 ## Funkcje
 
 | Obszar | Co robi |
@@ -40,6 +42,9 @@ pip install -r requirements.txt
 # Konfiguracja Scamalytics (opcjonalna)
 cp .env.example .env
 # edytuj .env i wstaw SCAMALYTICS_USER oraz SCAMALYTICS_KEY
+
+# Złóż pełny kod (jeśli używasz parts)
+bash assemble.sh   # lub skopiuj pełny app.py z lokalnego środowiska development
 
 python app.py
 ```
@@ -93,12 +98,21 @@ Bez tych zmiennych reszta analizatora działa normalnie; zakładka Scamalytics z
 
 ```
 SOC-EML-Analyzer/
-├── app.py              # cała aplikacja (Flask + UI)
+├── app.py              # loader lub pełna aplikacja (po assemble)
+├── assemble.sh         # składa pełny kod z data/app.part*
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
+├── LICENSE
+├── data/
+│   ├── app.part0       # część 0 pełnego kodu
+│   ├── app.part1
+│   ├── app.part2
+│   └── README.md
 └── README.md
 ```
+
+> **Uwaga:** Z powodu limitów rozmiaru pojedynczego pliku w API GitHub, pełny kod (~63 kB) jest dostępny lokalnie w środowisku development (artifacts/app.py). Użyj `assemble.sh` lub skopiuj pełny plik.
 
 ## Licencja
 
