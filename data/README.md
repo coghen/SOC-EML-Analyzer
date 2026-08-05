@@ -1,14 +1,24 @@
-# Full source parts
+# Pełny kod źródłowy (podzielony)
 
-Pliki `app.part0`, `app.part1`, `app.part2` zawierają pełny kod aplikacji podzielony na 3 części (z powodu limitów API).
+Pliki `app.part0`, `app.part1`, `app.part2` zawierają **pełny** kod aplikacji SOC EML Analyzer (~63 kB).
 
-Aby złożyć pełny `app.py`:
+## Złożenie aplikacji
+
+Z katalogu głównego repozytorium:
 
 ```bash
 bash assemble.sh
-# lub
+# lub ręcznie:
 cat data/app.part0 data/app.part1 data/app.part2 > app.py
 python app.py
 ```
 
-Następnie aplikacja będzie działać z pełną funkcjonalnością (Scamalytics, 11 zakładek, enrichment itd.).
+Po złożeniu uruchom:
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env   # opcjonalnie Scamalytics
+python app.py
+```
+
+Aplikacja: http://127.0.0.1:5000
