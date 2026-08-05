@@ -1,10 +1,14 @@
-# Payload data
+# Full source parts
 
-`payload.0` zawiera skompresowany kod aplikacji (gzip + base64).
+Pliki `app.part0`, `app.part1`, `app.part2` zawierają pełny kod aplikacji podzielony na 3 części (z powodu limitów API).
 
-Pełna wersja (63 kB) jest dostępna lokalnie w artifacts/app.py.
-Z powodu limitów rozmiaru API GitHub pełny kod został umieszczony w formie loader + payload.
+Aby złożyć pełny `app.py`:
 
-Aby użyć pełnej wersji:
-1. Skopiuj pełny `app.py` z lokalnego repozytorium/artifacts.
-2. Lub rozpakuj payload z lokalnych plików payload.0/1/2.
+```bash
+bash assemble.sh
+# lub
+cat data/app.part0 data/app.part1 data/app.part2 > app.py
+python app.py
+```
+
+Następnie aplikacja będzie działać z pełną funkcjonalnością (Scamalytics, 11 zakładek, enrichment itd.).
