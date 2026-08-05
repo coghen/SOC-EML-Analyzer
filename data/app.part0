@@ -18,6 +18,556 @@ from difflib import SequenceMatcher
 
 from flask import Flask, request, render_template_string, jsonify
 import requests
+import whois
+import dns.resolver
 
-# ... [pełny kod części 0 - zbyt długi dla pojedynczego pushu API; użyj lokalnego artifacts/app.py.part0]
-print('Part 0 placeholder - use local full source')
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
+
+# ============================================================
+# SCAMALYTICS (opcjonalne – ze zmiennych środowiskowych)
+# ============================================================
+SCAMALYTICS_USER = os.environ.get('SCAMALYTICS_USER', '').strip()
+SCAMALYTICS_KEY = os.environ.get('SCAMALYTICS_KEY', '').strip()
+SCAMALYTICS_BASE = os.environ.get(
+    'SCAMALYTICS_BASE', 'https://api12.scamalytics.com/v3'
+).rstrip('/')
+
+# ============================================================
+# KONFIGURACJA
+# ============================================================
+
+SUSPICIOUS_EXTENSIONS = {
+    '.exe', '.dll', '.scr', '.bat', '.cmd', '.ps1', '.vbs', '.js', '.jse',
+    '.wsf', '.wsh', '.msi', '.msp', '.com', '.pif', '.hta', '.jar', '.apk',
+    '.iso', '.img', '.vhd', '.vhdx', '.lnk', '.docm', '.xlsm', '.pptm', '.rtf'
+}
+
+BRANDS = [
+    'paypal.com', 'microsoft.com', 'google.com', 'apple.com', 'amazon.com',
+    'facebook.com', 'instagram.com', 'twitter.com', 'linkedin.com', 'netflix.com',
+    'ebay.com', 'alibaba.com', 'outlook.com', 'office365.com', 'live.com',
+    'gmail.com', 'yahoo.com', 'icloud.com', 'dropbox.com', 'adobe.com',
+    'mbank.pl', 'pkobp.pl', 'ing.pl', 'santander.pl', 'allegro.pl', 'olx.pl',
+    'bankmillennium.pl', 'bnpparibas.pl', 'credit-agricole.pl', 'getinbank.pl',
+    'gov.pl', 'zus.pl', 'nfz.gov.pl', 'podatki.gov.pl', 'ceidg.gov.pl'
+]
+
+PHISHING_KEYWORDS = [
+    r'\bpilne\b', r'\bnatychmiast\b', r'\bkonto zablokowane\b', r'\bkonto zawieszone\b',
+    r'\bweryfikacj[aei]\b', r'\bpotwierdź\b', r'\bkliknij tutaj\b', r'\baktualizuj dane\b',
+    r'\bbezpieczeństw[oa]\b', r'\bnieautoryzowan\w+\b', r'\bhasło wygasło\b',
+    r'\breset hasła\b', r'\bpotwierdzenie tożsamości\b',
+    r'\burgent\b', r'\bimmediate(ly)?\b', r'\baccount (suspended|locked|blocked)\b',
+    r'\bverify (your )?account\b', r'\baction required\b', r'\bclick here\b',
+    r'\bupdate (your )?(payment|billing|account)\b', r'\bsecurity alert\b',
+    r'\bunauthorized\b', r'\bconfirm (your )?identity\b', r'\bpassword expir\w+\b',
+    r'\blogin attempt\b', r'\bsuspicious activity\b'
+]
+
+SHORTENERS = {
+    'bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'ow.ly', 'is.gd', 'buff.ly',
+    'rebrand.ly', 'cutt.ly', 'shorturl.at', 'tiny.cc', 'adb.cx', 'clck.ru'
+}
+FREE_HOSTING = {
+    'github.io', 'herokuapp.com', 'netlify.app', 'vercel.app', '000webhostapp.com',
+    'firebaseapp.com', 'pages.dev', 'gitlab.io', 'surge.sh', 'web.app'
+}
+SUSPICIOUS_TLDS = {'.tk', '.ml', '.ga', '.cf', '.gq', '.xyz', '.top', '.club', '.work', '.click'}
+DISPOSABLE_DOMAINS = {
+    'mailinator.com', 'guerrillamail.com', 'tempmail.com', '10minutemail.com',
+    'throwaway.email', 'yopmail.com', 'trashmail.com', 'getnada.com', 'maildrop.cc'
+}
+DNSBLS = [
+    ('zen.spamhaus.org', 'Spamhaus ZEN'),
+    ('bl.spamcop.net', 'SpamCop'),
+    ('dnsbl.sorbs.net', 'SORBS'),
+    ('b.barracudacentral.org', 'Barracuda'),
+]
+
+BTC_REGEX = re.compile(r'\b(?:bc1[a-zA-HJ-NP-Z0-9]{25,62}|[13][a-zA-HJ-NP-Z0-9]{25,34})\b')
+IPV4_REGEX = re.compile(
+    r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}'
+    r'(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
+)
+EMAIL_REGEX = re.compile(r'\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b')
+URL_REGEX = re.compile(r'https?://[^\s<>"\'{}|\\^`\[\]]+', re.IGNORECASE)
+DOMAIN_REGEX = re.compile(
+    r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+'
+    r'(?:[a-zA-Z]{2,24}|xn--[a-zA-Z0-9]+)\b',
+    re.IGNORECASE
+)
+DOMAIN_BLACKLIST_PREFIXES = (
+    'header.', 'smtp.', 'from=', 'by=', 'with=', 'id=', 'for=',
+    'arc-', 'dkim-', 'spf=', 'dmarc=', 'auth=', 'received-',
+)
+DOMAIN_BLACKLIST_EXACT = {
+    'localhost', 'example.com', 'example.org', 'example.net',
+    'test.com', 'invalid', 'local', 'internal',
+}
+
+
+# ============================================================
+# POMOCNICZE
+# ============================================================
+
+def safe_decode(payload, charset='utf-8'):
+    if payload is None:
+        return ''
+    if isinstance(payload, str):
+        return payload
+    try:
+        return payload.decode(charset or 'utf-8', errors='replace')
+    except Exception:
+        return payload.decode('utf-8', errors='replace')
+
+
+def get_domain_from_email(addr):
+    _, email = parseaddr(addr or '')
+    if '@' in email:
+        return email.split('@')[-1].lower().strip()
+    return ''
+
+
+def is_public_ip(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+        return not (addr.is_private or addr.is_loopback or addr.is_reserved
+                    or addr.is_link_local or addr.is_multicast)
+    except Exception:
+        return False
+
+
+def reverse_ip(ip):
+    return '.'.join(reversed(ip.split('.')))
+
+
+def is_valid_domain_candidate(d: str) -> bool:
+    d = d.lower().strip('.').strip()
+    if not d or len(d) < 4:
+        return False
+    if re.fullmatch(r'\d{1,3}(?:\.\d{1,3}){3}', d):
+        return False
+    if any(d.startswith(p) for p in DOMAIN_BLACKLIST_PREFIXES):
+        return False
+    if d in DOMAIN_BLACKLIST_EXACT:
+        return False
+    if '.' not in d:
+        return False
+    if d.endswith(('.png', '.jpg', '.jpeg', '.gif', '.css', '.js', '.ico', '.svg', '.woff', '.ttf')):
+        return False
+    if len(d.split('.')[-1]) > 24:
+        return False
+    return True
+
+
+# ============================================================
+# PARSOWANIE EML
+# ============================================================
+
+def extract_headers(msg):
+    headers = {}
+    interesting = [
+        'From', 'To', 'Cc', 'Bcc', 'Subject', 'Date', 'Message-ID',
+        'Reply-To', 'Return-Path', 'Authentication-Results',
+        'Received-SPF', 'DKIM-Signature', 'ARC-Authentication-Results',
+        'ARC-Message-Signature', 'ARC-Seal',
+        'X-Mailer', 'User-Agent', 'X-Originating-IP', 'X-Sender-IP', 'X-Remote-IP'
+    ]
+    for h in interesting:
+        val = msg.get(h)
+        if val:
+            headers[h] = str(val)
+    received = msg.get_all('Received') or []
+    headers['Received'] = [str(r) for r in received]
+    dkim_sigs = msg.get_all('DKIM-Signature') or []
+    headers['DKIM-Signature-All'] = [str(s) for s in dkim_sigs]
+    return headers
+
+
+def parse_dkim_signature(raw_sig):
+    fields = {}
+    cleaned = re.sub(r'\r?\n\s+', ' ', raw_sig)
+    for part in cleaned.split(';'):
+        part = part.strip()
+        if '=' in part:
+            k, v = part.split('=', 1)
+            fields[k.strip().lower()] = v.strip()
+    return fields
+
+
+def analyze_dkim(headers, from_domain):
+    results = []
+    raw_list = headers.get('DKIM-Signature-All') or []
+    if not raw_list and headers.get('DKIM-Signature'):
+        raw_list = [headers['DKIM-Signature']]
+    for raw in raw_list:
+        fields = parse_dkim_signature(raw)
+        d = fields.get('d', '').lower()
+        s = fields.get('s', '')
+        alignment = 'brak'
+        if d and from_domain:
+            if d == from_domain:
+                alignment = 'strict'
+            elif from_domain.endswith('.' + d) or d.endswith('.' + from_domain):
+                alignment = 'relaxed'
+            else:
+                d_parts, f_parts = d.split('.'), from_domain.split('.')
+                if len(d_parts) >= 2 and len(f_parts) >= 2 and d_parts[-2:] == f_parts[-2:]:
+                    alignment = 'relaxed (eTLD+1)'
+                else:
+                    alignment = 'fail'
+        results.append({
+            'raw_preview': raw[:180] + ('…' if len(raw) > 180 else ''),
+            'domain': d, 'selector': s,
+            'algorithm': fields.get('a', ''),
+            'canonicalization': fields.get('c', ''),
+            'body_hash_preview': (fields.get('bh', '')[:20] + '…') if fields.get('bh') else None,
+            'alignment': alignment,
+            'from_domain': from_domain,
+            'headers_signed': fields.get('h', '')
+        })
+    return results
+
+
+def parse_auth_results(auth_header):
+    if not auth_header:
+        return {}
+    result = {'raw': auth_header, 'spf': None, 'dkim': None, 'dmarc': None}
+    for proto in ('spf', 'dkim', 'dmarc'):
+        m = re.search(
+            rf'\b{proto}=(pass|fail|softfail|neutral|none|temperror|permerror|bestguesspass)',
+            auth_header, re.I
+        )
+        if m:
+            result[proto] = m.group(1).lower()
+    return result
+
+
+def parse_mail_flow(received_list):
+    flow = []
+    for i, raw in enumerate(reversed(received_list)):
+        hop = {
+            'order': i + 1,
+            'raw': raw[:500] + ('…' if len(raw) > 500 else ''),
+            'from': None, 'by': None, 'with': None, 'date': None, 'ips': []
+        }
+        m_from = re.search(r'from\s+([^\s;]+)', raw, re.I)
+        m_by = re.search(r'by\s+([^\s;]+)', raw, re.I)
+        m_with = re.search(r'with\s+([^\s;]+)', raw, re.I)
+        m_date = re.search(
+            r';(\w{3},\s+\d+\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+\-]\d{4})', raw
+        )
+        if m_from:
+            hop['from'] = m_from.group(1)
+        if m_by:
+            hop['by'] = m_by.group(1)
+        if m_with:
+            hop['with'] = m_with.group(1)
+        if m_date:
+            hop['date'] = m_date.group(1)
+        for ip in IPV4_REGEX.findall(raw):
+            if is_public_ip(ip):
+                hop['ips'].append(ip)
+        flow.append(hop)
+    return flow
+
+
+def extract_relay_ips(headers, mail_flow):
+    seen = set()
+    relays = []
+    for hname in ('X-Originating-IP', 'X-Sender-IP', 'X-Remote-IP'):
+        val = headers.get(hname, '')
+        for ip in IPV4_REGEX.findall(val):
+            if is_public_ip(ip) and ip not in seen:
+                seen.add(ip)
+                relays.append({'ip': ip, 'source': hname, 'hop': 0, 'note': 'Nagłówek klienta'})
+    for hop in mail_flow:
+        for ip in hop.get('ips', []):
+            if ip not in seen:
+                seen.add(ip)
+                relays.append({
+                    'ip': ip, 'source': 'Received', 'hop': hop['order'],
+                    'note': f"from={hop.get('from') or '-'} by={hop.get('by') or '-'}"
+                })
+    return relays
+
+
+def extract_attachments(msg):
+    attachments = []
+    for part in msg.walk():
+        content_disposition = str(part.get('Content-Disposition') or '')
+        filename = part.get_filename()
+        if not filename and 'attachment' not in content_disposition.lower():
+            continue
+        if not filename:
+            filename = f'unnamed_{len(attachments)}'
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        md5 = hashlib.md5(payload).hexdigest()
+        sha256 = hashlib.sha256(payload).hexdigest()
+        ext = os.path.splitext(filename)[1].lower()
+        attachments.append({
+            'filename': filename, 'size': len(payload),
+            'content_type': part.get_content_type(),
+            'md5': md5, 'sha256': sha256, 'extension': ext,
+            'suspicious_ext': ext in SUSPICIOUS_EXTENSIONS
+        })
+    return attachments
+
+
+def extract_iocs(text, headers):
+    text = text or ''
+    safe_headers = []
+    for k, v in headers.items():
+        if k in ('From', 'To', 'Cc', 'Bcc', 'Reply-To', 'Return-Path', 'Subject', 'Message-ID'):
+            safe_headers.append(str(v))
+    all_text = text + ' ' + ' '.join(safe_headers)
+
+    ips = [ip for ip in set(IPV4_REGEX.findall(all_text)) if is_public_ip(ip)]
+    emails = list(set(EMAIL_REGEX.findall(all_text)))
+    urls = list(set(URL_REGEX.findall(all_text)))
+    domains = set()
+
+    for u in urls:
+        m = re.search(r'https?://([^/:]+)', u, re.I)
+        if m:
+            host = m.group(1).lower().lstrip('www.')
+            if is_valid_domain_candidate(host):
+                domains.add(host)
+    for d in DOMAIN_REGEX.findall(all_text):
+        d = d.lower().lstrip('www.')
+        if is_valid_domain_candidate(d):
+            domains.add(d)
+    for em in emails:
+        if '@' in em:
+            dom = em.split('@')[-1].lower()
+            if is_valid_domain_candidate(dom):
+                domains.add(dom)
+
+    btc = list(set(BTC_REGEX.findall(all_text)))
+    return {
+        'ips': sorted(ips), 'emails': sorted(emails), 'urls': sorted(urls),
+        'domains': sorted(domains), 'btc': sorted(btc)
+    }
+
+
+def check_typosquatting(domain):
+    domain = domain.lower().lstrip('www.')
+    results = []
+    for brand in BRANDS:
+        ratio = SequenceMatcher(None, domain, brand).ratio()
+        if 0.7 <= ratio < 1.0:
+            results.append({'brand': brand, 'similarity': round(ratio * 100, 1)})
+    return sorted(results, key=lambda x: -x['similarity'])
+
+
+def is_homoglyph_or_idn(domain):
+    try:
+        domain.encode('ascii')
+        return False, None
+    except UnicodeEncodeError:
+        try:
+            return True, domain.encode('idna').decode('ascii')
+        except Exception:
+            return True, None
+
+
+def get_body_text(msg):
+    body = ''
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            if ctype == 'text/plain':
+                body += safe_decode(part.get_payload(decode=True), part.get_content_charset())
+            elif ctype == 'text/html' and not body:
+                html = safe_decode(part.get_payload(decode=True), part.get_content_charset())
+                body += re.sub(r'<[^>]+>', ' ', html)
+    else:
+        body = safe_decode(msg.get_payload(decode=True), msg.get_content_charset())
+    return body
+
+
+def detect_phishing(headers, body, iocs, attachments, dkim_analysis, auth_results, typos, relay_ips):
+    indicators = []
+    score = 0
+    from_raw = headers.get('From', '')
+    from_name, _ = parseaddr(from_raw)
+    from_domain = get_domain_from_email(from_raw)
+    reply_to = headers.get('Reply-To', '')
+    return_path = headers.get('Return-Path', '')
+    subject = (headers.get('Subject') or '').lower()
+    body_lower = (body or '').lower()
+
+    rp_domain = get_domain_from_email(return_path)
+    if rp_domain and from_domain and rp_domain != from_domain:
+        indicators.append({
+            'severity': 'high', 'title': 'Niezgodność From ↔ Return-Path',
+            'detail': f'From: {from_domain} | Return-Path: {rp_domain}'
+        })
+        score += 25
+    rt_domain = get_domain_from_email(reply_to)
+    if rt_domain and from_domain and rt_domain != from_domain:
+        indicators.append({
+            'severity': 'high', 'title': 'Niezgodność From ↔ Reply-To',
+            'detail': f'From: {from_domain} | Reply-To: {rt_domain}'
+        })
+        score += 20
+    for brand in BRANDS:
+        brand_name = brand.split('.')[0]
+        if brand_name in (from_name or '').lower() and from_domain and brand not in from_domain:
+            indicators.append({
+                'severity': 'critical', 'title': 'Spoofing nazwy wyświetlanej',
+                'detail': f'„{from_name}” vs domena {from_domain}'
+            })
+            score += 30
+            break
+    if auth_results.get('spf') in ('fail', 'softfail'):
+        indicators.append({
+            'severity': 'high', 'title': 'SPF fail/softfail',
+            'detail': f'spf={auth_results["spf"]}'
+        })
+        score += 20
+    if auth_results.get('dkim') == 'fail':
+        indicators.append({'severity': 'high', 'title': 'DKIM fail', 'detail': ''})
+        score += 20
+    if auth_results.get('dmarc') == 'fail':
+        indicators.append({'severity': 'critical', 'title': 'DMARC fail', 'detail': ''})
+        score += 25
+    if not dkim_analysis:
+        indicators.append({'severity': 'medium', 'title': 'Brak podpisu DKIM', 'detail': ''})
+        score += 10
+    else:
+        for d in dkim_analysis:
+            if d['alignment'] == 'fail':
+                indicators.append({
+                    'severity': 'high', 'title': 'DKIM alignment fail',
+                    'detail': f'd={d["domain"]} ≠ From ({from_domain})'
+                })
+                score += 20
+    found_kw = [
+        kw.replace(r'\b', '').replace('\\', '')
+        for kw in PHISHING_KEYWORDS
+        if re.search(kw, subject) or re.search(kw, body_lower)
+    ]
+    if found_kw:
+        indicators.append({
+            'severity': 'medium', 'title': 'Słowa kluczowe urgency/phishing',
+            'detail': ', '.join(found_kw[:8])
+        })
+        score += 8 + min(len(found_kw), 5) * 2
+    for dom, hits in (typos or {}).items():
+        indicators.append({
+            'severity': 'high', 'title': f'Typosquatting: {dom}',
+            'detail': ', '.join(f'{h["brand"]} ({h["similarity"]}%)' for h in hits[:3])
+        })
+        score += 15
+    sus_att = [a for a in attachments if a.get('suspicious_ext')]
+    if sus_att:
+        indicators.append({
+            'severity': 'high', 'title': 'Podejrzane załączniki',
+            'detail': ', '.join(a['filename'] for a in sus_att[:5])
+        })
+        score += 15
+    ip_urls = [u for u in iocs.get('urls', []) if re.search(r'https?://\d+\.\d+\.\d+\.\d+', u)]
+    if ip_urls:
+        indicators.append({
+            'severity': 'medium', 'title': 'URL zawiera adres IP',
+            'detail': ip_urls[0][:80]
+        })
+        score += 10
+    short_urls = [u for u in iocs.get('urls', []) if any(s in u.lower() for s in SHORTENERS)]
+    if short_urls:
+        indicators.append({
+            'severity': 'medium', 'title': 'Skrócone linki',
+            'detail': short_urls[0][:80]
+        })
+        score += 8
+    for d in iocs.get('domains', []):
+        if any(d.endswith(fh) or fh in d for fh in FREE_HOSTING):
+            indicators.append({'severity': 'medium', 'title': f'Free hosting: {d}', 'detail': ''})
+            score += 10
+        if any(d.endswith(t) for t in SUSPICIOUS_TLDS):
+            indicators.append({'severity': 'medium', 'title': f'Podejrzane TLD: {d}', 'detail': ''})
+            score += 8
+    for d in iocs.get('domains', []):
+        is_idn, puny = is_homoglyph_or_idn(d)
+        if is_idn:
+            indicators.append({
+                'severity': 'high', 'title': f'Domena IDN/homoglyph: {d}',
+                'detail': f'punycode: {puny}' if puny else ''
+            })
+            score += 15
+    if from_domain in DISPOSABLE_DOMAINS:
+        indicators.append({
+            'severity': 'high', 'title': 'Disposable e-mail (From)',
+            'detail': from_domain
+        })
+        score += 20
+    if not headers.get('Message-ID'):
+        indicators.append({'severity': 'low', 'title': 'Brak Message-ID', 'detail': ''})
+        score += 5
+    if headers.get('ARC-Authentication-Results') or headers.get('ARC-Seal'):
+        indicators.append({'severity': 'low', 'title': 'Obecny łańcuch ARC', 'detail': ''})
+
+    score = min(score, 100)
+    if score >= 70:
+        level = 'KRYTYCZNY'
+    elif score >= 45:
+        level = 'WYSOKI'
+    elif score >= 25:
+        level = 'ŚREDNI'
+    else:
+        level = 'NISKI'
+    return {'score': score, 'level': level, 'indicators': indicators}
+
+
+def parse_eml(file_bytes):
+    msg = BytesParser(policy=policy.default).parsebytes(file_bytes)
+    headers = extract_headers(msg)
+    body = get_body_text(msg)
+    attachments = extract_attachments(msg)
+    iocs = extract_iocs(body, headers)
+    mail_flow = parse_mail_flow(headers.get('Received', []))
+    relay_ips = extract_relay_ips(headers, mail_flow)
+    from_domain = get_domain_from_email(headers.get('From', ''))
+    dkim_analysis = analyze_dkim(headers, from_domain)
+    auth_results = parse_auth_results(headers.get('Authentication-Results', ''))
+    typos = {d: check_typosquatting(d) for d in iocs['domains'] if check_typosquatting(d)}
+    phishing = detect_phishing(
+        headers, body, iocs, attachments, dkim_analysis, auth_results, typos, relay_ips
+    )
+    all_ips = set(iocs['ips'])
+    for r in relay_ips:
+        all_ips.add(r['ip'])
+    return {
+        'headers': headers,
+        'body_preview': body[:3000] + ('…' if len(body) > 3000 else ''),
+        'attachments': attachments,
+        'iocs': iocs,
+        'mail_flow': mail_flow,
+        'relay_ips': relay_ips,
+        'all_public_ips': sorted(all_ips),
+        'typosquatting': typos,
+        'dkim_analysis': dkim_analysis,
+        'auth_results': auth_results,
+        'phishing': phishing,
+        'from_domain': from_domain,
+        'scamalytics_configured': bool(SCAMALYTICS_USER and SCAMALYTICS_KEY),
+        'parsed_at': datetime.utcnow().isoformat() + 'Z'
+    }
+
+
+# ============================================================
+# ENRICHMENT
+# ============================================================
+
+def query_scamalytics(ip):
+    if not SCAMA
